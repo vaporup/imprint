@@ -172,9 +172,9 @@ trap 'rm -rf "$BUILD"' EXIT
 #   ```mermaid blocks  -> SVG figure (optional `%% caption:` line -> caption)
 #   <!-- pagebreak -->  -> Typst page break
 # Merged metadata is written to meta.kv for the bash side to finalize.
-python3 - "$IN" "$BUILD" "$KEEP_H1" "$CONFIG" <<'PY'
-import sys, re, subprocess, pathlib, platform
-src, build, keep_h1, cfgpath = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3] == "1", sys.argv[4]
+python3 - "$IN" "$BUILD" "$KEEP_H1" "$CONFIG" "$ACCENT" <<'PY'
+import sys, re, subprocess, pathlib, platform, json
+src, build, keep_h1, cfgpath, cli_accent = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3] == "1", sys.argv[4], sys.argv[5]
 
 def parse_flat(text):
     # Flat `key: value` pairs — no PyYAML dependency. Skips blanks/comments and
@@ -330,7 +330,44 @@ text = re.sub(r'(?m)^[ \t]*<!--[ \t]*(?:pagebreak|newpage)[ \t]*-->[ \t]*$', lam
 # makes Mermaid emit native <text> the Typst SVG renderer can draw.
 mmcfg = build / "mermaid-config.json"
 font_body = meta.get("font_body", "Source Sans 3")
-mmcfg.write_text('{"htmlLabels":false,"fontFamily":"%s","flowchart":{"htmlLabels":false},"themeVariables":{"fontFamily":"%s"}}' % (font_body, font_body))
+# Derive diagram palette from the configured accent so Mermaid matches the template.
+# Same precedence Typst gets (CLI > front matter > config): meta.get("accent")
+# already resolves front matter over config, so a CLI --accent is layered on top.
+# Pure hex math: lighten toward white by p%, matching Typst's accent.lighten(90%).
+_acc_raw = (cli_accent or meta.get("accent", "#2563EB")).lstrip("#")
+def _lighten(h, p):
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    f = p / 100
+    return "#%02x%02x%02x" % (int(r + (255-r)*f), int(g + (255-g)*f), int(b + (255-b)*f))
+_accent      = "#" + _acc_raw
+_accent_soft = _lighten(_acc_raw, 90)   # matches template accent.lighten(90%)
+mmcfg.write_text(json.dumps({
+    # mmdc's own -t/--theme flag only whitelists default/forest/dark/neutral
+    # (and "neutral" ignores themeVariables), so "base" must go in the config
+    # file mermaid.initialize() reads, not on the command line.
+    "theme": "base",
+    "htmlLabels": False,
+    "fontFamily": font_body,
+    "flowchart": {"htmlLabels": False},
+    "themeVariables": {
+        "fontFamily":                    font_body,
+        "primaryColor":                  _accent_soft,  # node fill
+        "primaryBorderColor":            _accent,       # node border
+        "primaryTextColor":              "#1f2937",     # ink
+        "secondaryColor":                "#f9fafb",     # surface
+        "tertiaryColor":                 "#f9fafb",     # surface
+        "lineColor":                     _accent,       # edges / arrows
+        "textColor":                     "#1f2937",     # ink
+        "background":                    "#ffffff",
+        "nodeBorder":                    _accent,
+        "clusterBkg":                    "#f9fafb",     # surface
+        "clusterBorder":                 "#e5e7eb",     # hairline
+        "titleColor":                    "#111827",     # heading-ink
+        "edgeLabelBackground":           "#ffffff",
+        "attributeBackgroundColorEven":  "#f9fafb",
+        "attributeBackgroundColorOdd":   "#ffffff",
+    },
+}))
 # On Linux, Puppeteer (used by mmdc) requires --no-sandbox in most headless
 # environments (CI, Docker, VMs) where the kernel sandbox is unavailable.
 mmppcfg = None
@@ -351,7 +388,7 @@ def render(match):
     mmd = build / f"mermaid-{n}.mmd"
     svg = build / f"mermaid-{n}.svg"
     mmd.write_text("\n".join(kept))
-    cmd = ["mmdc", "-i", str(mmd), "-o", str(svg), "-b", "white", "-t", "neutral",
+    cmd = ["mmdc", "-i", str(mmd), "-o", str(svg), "-b", "white",
            "-c", str(mmcfg)]
     if mmppcfg:
         cmd += ["-p", str(mmppcfg)]
