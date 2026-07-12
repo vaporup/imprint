@@ -13,6 +13,7 @@
 #          [--cover | --no-cover] [--cover-style light|gradient] [--gradient]
 #          [--toc | --no-toc] [--numbered | --no-numbered] [--lang BCP47]
 #          [--code-font-size PT] [--confidential | --no-confidential]
+#          [--diagram-theme accent|neutral|default|forest|dark]
 #          [--keep-h1] [--template PATH]
 #          [--profile NAME | --list-profiles | --conventions]
 #
@@ -71,10 +72,10 @@ IN=""; OUT=""
 TITLE=""; SUBTITLE=""; DESC=""; AUTHOR=""; FOOTER_TEXT_CLI=""
 RECIPIENT=""; DATE=""; CONF=""; KEEP_H1=0; COVER=""; CATEGORY=""; ACCENT=""; LOGO_CLI=""; LOGO_HEIGHT_CLI=""
 COVER_STYLE=""; LOGO_DARK_BG_CLI=""; NO_LOGO=0; PROFILE_CLI=""; LIST_PROFILES=0; SHOW_CONVENTIONS=0; TEMPLATE_CLI=""
-TOC=""; NUMBERED=""; DOC_LANG_CLI=""; CODE_SIZE_CLI=""
+TOC=""; NUMBERED=""; DOC_LANG_CLI=""; CODE_SIZE_CLI=""; DIAGRAM_THEME=""
 
 usage() {
-  sed -n '2,30p' "$SOURCE" | sed 's/^# \{0,1\}//'
+  sed -n '2,31p' "$SOURCE" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -105,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --no-gradient) COVER_STYLE=light; shift;;
     --confidential) CONF=1; shift;;
     --no-confidential) CONF=0; shift;;
+    --diagram-theme) DIAGRAM_THEME="$2"; shift 2;;   # accent | neutral | default | forest | dark
     --toc) TOC=1; shift;;
     --no-toc) TOC=0; shift;;
     --numbered) NUMBERED=1; shift;;
@@ -172,9 +174,11 @@ trap 'rm -rf "$BUILD"' EXIT
 #   ```mermaid blocks  -> SVG figure (optional `%% caption:` line -> caption)
 #   <!-- pagebreak -->  -> Typst page break
 # Merged metadata is written to meta.kv for the bash side to finalize.
-python3 - "$IN" "$BUILD" "$KEEP_H1" "$CONFIG" "$ACCENT" <<'PY'
+python3 - "$IN" "$BUILD" "$KEEP_H1" "$CONFIG" "$ACCENT" "$DIAGRAM_THEME" "$TEMPLATES/default.typ" <<'PY'
 import sys, re, subprocess, pathlib, platform, json
 src, build, keep_h1, cfgpath, cli_accent = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3] == "1", sys.argv[4], sys.argv[5]
+cli_diagram_theme = sys.argv[6]   # theme name from --diagram-theme, "" when not given
+default_typ = pathlib.Path(sys.argv[7])   # bundled template — the theme-token source
 
 def parse_flat(text):
     # Flat `key: value` pairs — no PyYAML dependency. Skips blanks/comments and
@@ -236,7 +240,7 @@ if m:
 PDF_CONFIG_KEYS = ("accent", "font_body", "font_head", "font_mono", "cover",
                    "cover_style", "confidential", "toc", "numbered", "lang",
                    "code_font_size", "logo", "logo_dark_bg", "logo_height",
-                   "template")
+                   "template", "diagram_theme")
 merged = {k: cfg[k] for k in PDF_CONFIG_KEYS if cfg.get(k) not in (None, "")}
 merged.update(fm)
 if not merged.get("title") and h1:
@@ -293,10 +297,14 @@ meta = {k: merged[k] for k in KEYS if merged.get(k) not in (None, "")}
 ident = re.compile(r'^[A-Za-z][A-Za-z0-9_]*$')
 # pandoc fills these itself — never let a stray key overwrite the rendered body etc.
 RESERVED_VARS = {"body", "toc", "meta"}
+# Settings this preprocessor consumes itself. They steer diagram rendering, not the
+# template, so they must not ride the passthrough into pandoc as -V variables.
+PREPROCESS_KEYS = {"diagram_theme"}
 extra = {}
 for source in (cfg, fm):
     for k, v in source.items():
-        if k not in KEYS and k not in RESERVED_VARS and ident.match(k) and v not in (None, ""):
+        if (k not in KEYS and k not in RESERVED_VARS and k not in PREPROCESS_KEYS
+                and ident.match(k) and v not in (None, "")):
             extra[k] = v
 (build / "extra.kv").write_text("".join(f"{k}={v}\n" for k, v in extra.items()))
 
@@ -330,44 +338,100 @@ text = re.sub(r'(?m)^[ \t]*<!--[ \t]*(?:pagebreak|newpage)[ \t]*-->[ \t]*$', lam
 # makes Mermaid emit native <text> the Typst SVG renderer can draw.
 mmcfg = build / "mermaid-config.json"
 font_body = meta.get("font_body", "Source Sans 3")
-# Derive diagram palette from the configured accent so Mermaid matches the template.
-# Same precedence Typst gets (CLI > front matter > config): meta.get("accent")
-# already resolves front matter over config, so a CLI --accent is layered on top.
-# Pure hex math: lighten toward white by p%, matching Typst's accent.lighten(90%).
-_acc_raw = (cli_accent or meta.get("accent", "#2563EB")).lstrip("#")
-def _lighten(h, p):
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    f = p / 100
-    return "#%02x%02x%02x" % (int(r + (255-r)*f), int(g + (255-g)*f), int(b + (255-b)*f))
-_accent      = "#" + _acc_raw
-_accent_soft = _lighten(_acc_raw, 90)   # matches template accent.lighten(90%)
-mmcfg.write_text(json.dumps({
-    # mmdc's own -t/--theme flag only whitelists default/forest/dark/neutral
-    # (and "neutral" ignores themeVariables), so "base" must go in the config
-    # file mermaid.initialize() reads, not on the command line.
-    "theme": "base",
+
+# Diagram theme: `diagram_theme` (config / front matter) or --diagram-theme. The
+# default is Mermaid's own "neutral" — a diagram is often a borrowed or shared
+# artifact, so a house accent splashed across every node is a strong look to impose
+# by default. "accent" opts into a palette derived from the document's accent; the
+# rest are Mermaid's built-ins, passed through untouched. Same precedence as
+# everything else: CLI > front matter > config > neutral.
+DIAGRAM_THEMES = ("accent", "neutral", "default", "forest", "dark")
+diagram_theme = (cli_diagram_theme or merged.get("diagram_theme", "") or "neutral").strip().lower()
+if diagram_theme not in DIAGRAM_THEMES:
+    sys.exit(f"imprint: unknown diagram_theme '{diagram_theme}' "
+             f"(expected one of: {', '.join(DIAGRAM_THEMES)})")
+
+# mmdc's own -t/--theme flag only whitelists default/forest/dark/neutral, and
+# rejects the "base" that accent mode needs — so the theme always goes in the config
+# file mermaid.initialize() reads, never on the command line.
+mm = {
+    "theme": "base" if diagram_theme == "accent" else diagram_theme,
     "htmlLabels": False,
     "fontFamily": font_body,
     "flowchart": {"htmlLabels": False},
-    "themeVariables": {
-        "fontFamily":                    font_body,
-        "primaryColor":                  _accent_soft,  # node fill
-        "primaryBorderColor":            _accent,       # node border
-        "primaryTextColor":              "#1f2937",     # ink
-        "secondaryColor":                "#f9fafb",     # surface
-        "tertiaryColor":                 "#f9fafb",     # surface
-        "lineColor":                     _accent,       # edges / arrows
-        "textColor":                     "#1f2937",     # ink
-        "background":                    "#ffffff",
-        "nodeBorder":                    _accent,
-        "clusterBkg":                    "#f9fafb",     # surface
-        "clusterBorder":                 "#e5e7eb",     # hairline
-        "titleColor":                    "#111827",     # heading-ink
-        "edgeLabelBackground":           "#ffffff",
-        "attributeBackgroundColorEven":  "#f9fafb",
-        "attributeBackgroundColorOdd":   "#ffffff",
-    },
-}))
+    "themeVariables": {"fontFamily": font_body},
+}
+
+# Canvas the diagram is drawn on. Every theme but "dark" is designed for a light
+# background and sits directly on the white page. Mermaid's "dark" assumes a dark
+# canvas — it strokes edges in lightgrey, which would all but vanish on white — so
+# it keeps its own #333, rendering the figure as a dark card inset in the page.
+diagram_bg = "#333" if diagram_theme == "dark" else "white"
+
+if diagram_theme == "accent":
+    # Derive the palette from the accent Typst is using, so a tinted diagram reads as
+    # part of the document. meta["accent"] already resolves front matter over config;
+    # a CLI --accent layers on top. "base" is the only theme honouring themeVariables.
+    def norm_hex(v):
+        # Typst's rgb() takes #rgb / #rgba / #rrggbb / #rrggbbaa; this math needs
+        # six digits. Expand the short forms, drop alpha (diagram fills are opaque).
+        h = v.strip().lstrip("#")
+        if len(h) in (3, 4):
+            h = "".join(c * 2 for c in h)
+        h = h[:6]
+        if len(h) != 6 or not re.fullmatch(r'[0-9a-fA-F]{6}', h):
+            sys.exit(f"imprint: diagram_theme 'accent' needs a hex accent, got '{v}'")
+        return h
+    def lighten(h, p):
+        # Lighten toward white by p%, matching Typst's accent.lighten(p%).
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        f = p / 100
+        return "#%02x%02x%02x" % (int(r + (255-r)*f), int(g + (255-g)*f), int(b + (255-b)*f))
+
+    # The greys are the page's, not the diagram's: a tinted diagram has to sit on the
+    # same ink, borders, and surfaces as the prose around it. So they are read from the
+    # bundled template's `#let <token> = rgb("#hex")` block — the one source of theme
+    # truth — instead of being restated here, where they would silently drift the day a
+    # token changes. FALLBACK only covers a template whose block has been reshaped past
+    # recognition; a custom template keeps the bundled greys either way, since imprint
+    # can't know what palette someone else's layout uses.
+    FALLBACK = {"ink": "#1F2937", "heading-ink": "#111827",
+                "hairline": "#E5E7EB", "surface": "#F9FAFB"}
+    def tokens(path):
+        try:
+            text = path.read_text()
+        except OSError:
+            return dict(FALLBACK)
+        # The accent token is an interpolated pandoc placeholder, not a literal hex, so
+        # it simply doesn't match here — it is resolved separately, just above.
+        found = dict(re.findall(r'#let\s+([a-z-]+)\s*=\s*rgb\("(#[0-9A-Fa-f]{3,8})"\)', text))
+        return {k: found.get(k, v) for k, v in FALLBACK.items()}
+
+    t = tokens(default_typ)
+    ink, heading_ink = t["ink"], t["heading-ink"]
+    hairline, surface = t["hairline"], t["surface"]
+    paper = "#FFFFFF"   # the page itself — not a token, Typst never names it
+    acc = norm_hex(cli_accent or meta.get("accent", "#2563EB"))
+    accent, accent_soft = "#" + acc, lighten(acc, 90)   # soft = template accent.lighten(90%)
+    mm["themeVariables"].update({
+        "primaryColor":                  accent_soft,  # node fill
+        "primaryBorderColor":            accent,       # node border
+        "primaryTextColor":              ink,          # text inside nodes
+        "secondaryColor":                surface,
+        "tertiaryColor":                 surface,
+        "lineColor":                     accent,       # edges / arrows
+        "textColor":                     ink,          # text outside nodes (edge labels)
+        "background":                    paper,
+        "nodeBorder":                    accent,
+        "clusterBkg":                    surface,      # subgraph box
+        "clusterBorder":                 hairline,
+        "titleColor":                    heading_ink,
+        "edgeLabelBackground":           paper,
+        "attributeBackgroundColorEven":  surface,      # ER-diagram row striping
+        "attributeBackgroundColorOdd":   paper,
+    })
+
+mmcfg.write_text(json.dumps(mm))
 # On Linux, Puppeteer (used by mmdc) requires --no-sandbox in most headless
 # environments (CI, Docker, VMs) where the kernel sandbox is unavailable.
 mmppcfg = None
@@ -388,7 +452,7 @@ def render(match):
     mmd = build / f"mermaid-{n}.mmd"
     svg = build / f"mermaid-{n}.svg"
     mmd.write_text("\n".join(kept))
-    cmd = ["mmdc", "-i", str(mmd), "-o", str(svg), "-b", "white",
+    cmd = ["mmdc", "-i", str(mmd), "-o", str(svg), "-b", diagram_bg,
            "-c", str(mmcfg)]
     if mmppcfg:
         cmd += ["-p", str(mmppcfg)]

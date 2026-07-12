@@ -77,7 +77,8 @@ page width, code is themed, and Mermaid blocks render to crisp vector figures.
   table headers, and callouts. Change one value in config to re-tint the whole
   document.
 - **Mermaid** ` ```mermaid ` blocks auto-rendered to crisp vector **SVG**,
-  centered in a framed figure with an optional caption.
+  centered in a framed figure with an optional caption. `diagram_theme: accent`
+  tints them with your accent; Mermaid's own themes are there too.
 - **Callouts** — any Markdown block quote becomes a tinted note box.
 - **Self-contained fonts** — Source Sans 3 (default) or IBM Plex Sans for
   body/headings, JetBrains Mono for code; all bundled and embedded, and rendering
@@ -267,6 +268,7 @@ per document.
 | `numbered` / `--numbered` `--no-numbered` | `false` (config) | Number the headings (`1`, `1.1`, …). Render-only — your heading text is untouched |
 | `lang` / `--lang` | `en` (config) | Body language (BCP 47, e.g. `en-GB`, `de`) for hyphenation and justification |
 | `code_font_size` / `--code-font-size` | `9.2` (config) | Block-code font size in pt |
+| `diagram_theme` / `--diagram-theme` | `neutral` (config) | Mermaid diagram palette: `accent` (node fills, borders, and arrows derived from your `accent`), or one of Mermaid's built-ins — `neutral`, `default`, `forest`, `dark`. `accent` needs `accent` to be a hex color; `dark` draws on its own dark canvas |
 | `template` / `--template` | bundled `default.typ` | Path to a custom Typst template. A config path resolves relative to the config file, a front-matter path relative to the `.md` |
 
 ### Custom templates and extra fields
@@ -312,6 +314,12 @@ constructs are restyled:
 - **Page breaks.** `<!-- pagebreak -->` on its own line forces a new page.
 - **Diagram captions.** A `%% caption: …` line inside a ` ```mermaid ` block
   becomes the figure caption (and is stripped before rendering).
+- **Diagram colors.** Diagrams render in Mermaid's neutral theme by default, so a
+  diagram you borrowed or share elsewhere looks the way its author meant it to.
+  `diagram_theme: accent` (or `--diagram-theme accent`) re-tints them with the
+  document's accent; `default`, `forest`, and `dark` pass through to Mermaid's own
+  themes. `dark` keeps its dark canvas, so the figure becomes a dark card on the
+  page rather than washed-out grey on white.
 - **Table widths.** Every table spans the full page width; the *ratio* of dashes
   in the separator row sets how that width splits between columns.
 

@@ -49,6 +49,28 @@ throwaway build copy — the original `.md` is never touched:
   SVG and replaced with a Typst `#figure`. A `%% caption:` line becomes the
   caption. `htmlLabels:false` makes Mermaid emit native `<text>` the Typst SVG
   renderer can actually draw.
+- **Diagram theme.** `diagram_theme` picks the palette: `accent`, or one of
+  Mermaid's built-ins (`neutral` — the default — plus `default`, `forest`,
+  `dark`). The theme always goes in the JSON config `mmdc -c` reads, never its
+  `-t` flag, which whitelists only `default`/`forest`/`dark`/`neutral` and so
+  rejects the `base` that `accent` needs — `base` is the one theme that honours
+  `themeVariables`. Under `accent`, node fill, border, and edge colors derive
+  from the document's `accent`, reusing the same `lighten(90%)` tint the template
+  gives callouts, recomputed in Python because Typst's color math isn't reachable
+  from the preprocessor. Every *other* color in the diagram palette is a neutral
+  grey belonging to the page, not the diagram, so the preprocessor reads
+  `ink`/`heading-ink`/`hairline`/`surface` straight out of the bundled template's
+  `#let` token block rather than restating them — change a token and the diagram
+  follows. Neutral-by-default is deliberate — see
+  [ADR 0007](decisions/0007-diagram-theme.md).
+- **Diagram canvas.** `mmdc -b` is white for every theme but `dark`, which keeps
+  Mermaid's own `#333`. `dark` strokes its edges in `lightgrey` — on a white page
+  they would all but vanish — so the figure is drawn as a dark card inset in the
+  page instead.
+- **Preprocess-only settings.** `diagram_theme` is consumed by the Python step
+  and, unlike every other config key, never becomes a pandoc `-V` variable — it
+  steers diagram rendering, not the template. `PREPROCESS_KEYS` holds it back
+  from the generic passthrough.
 - **Page breaks.** `<!-- pagebreak -->` becomes a Typst `#pagebreak(weak: true)`.
 
 The merged metadata is written to `meta.kv`; the bash side then applies CLI

@@ -47,6 +47,7 @@ cover_style:   light         # look of the cover when shown: "light" (default) o
 confidential:  false         # adds a "Confidential" marker when true
 toc:           false         # table of contents OFF by default; set true or pass --toc (page numbers Markdown can't carry)
 numbered:      false         # section numbering OFF by default; set true or pass --numbered (render-only, your headings are untouched)
+diagram_theme: neutral       # Mermaid palette: "accent" (derived from `accent` above), or a built-in: "neutral" (default), "default", "forest", "dark"
 
 # --- Typesetting ---
 # lang: body language (BCP 47) — drives hyphenation + justification; default "en".
